@@ -22,10 +22,9 @@ from dvc_studio_client.post_live_metrics import get_studio_repo_url
 from funcy import retry
 
 from dvc.dependency import ParamsDependency
-from dvc.env import DVC_EXP_BASELINE_REV, DVC_EXP_NAME, DVCLIVE_RESUME
-from dvc.exceptions import DvcException
+from dvc.env import DVC_EXP_BASELINE_REV, DVC_EXP_NAME
 from dvc.lock import LockError
-from dvc.repo.experiments.exceptions import CheckpointExistsError, ExperimentExistsError
+from dvc.repo.experiments.exceptions import ExperimentExistsError
 from dvc.repo.experiments.executor.base import BaseExecutor
 from dvc.repo.experiments.executor.local import WorkspaceExecutor
 from dvc.repo.experiments.refs import ExpRefInfo
@@ -33,11 +32,9 @@ from dvc.repo.experiments.stash import ExpStash, ExpStashEntry
 from dvc.repo.experiments.utils import (
     EXEC_PID_DIR,
     EXEC_TMP_DIR,
-    exp_refs_by_rev,
     get_exp_rwlock,
     get_random_exp_name,
 )
-from dvc.ui import ui
 from dvc.utils.objects import cached_property
 
 from .utils import get_remote_executor_refs
@@ -297,11 +294,10 @@ class BaseStashQueue(ABC):
                 output.
         """
 
-    def _stash_exp(  # noqa: PLR0915, C901
+    def _stash_exp(  # noqa: C901
         self,
         *args,
         params: Optional[Dict[str, List[str]]] = None,
-        resume_rev: Optional[str] = None,
         baseline_rev: Optional[str] = None,
         branch: Optional[str] = None,
         name: Optional[str] = None,
@@ -312,7 +308,6 @@ class BaseStashQueue(ABC):
         Args:
             params: Dict mapping paths to `Hydra Override`_ patterns,
                 provided via `exp run --set-param`.
-            resume_rev: Optional checkpoint resume rev.
             baseline_rev: Optional baseline rev for this experiment, defaults
                 to the current SCM rev.
             branch: Optional experiment branch name. If specified, the
@@ -335,17 +330,6 @@ class BaseStashQueue(ABC):
                     if workspace:
                         self.stash.apply(workspace)
 
-                    if resume_rev:
-                        # move HEAD to the resume rev so that the stashed diff
-                        # only contains changes relative to resume rev
-                        stash_head = resume_rev
-                        self.scm.set_ref(
-                            "HEAD",
-                            resume_rev,
-                            message=f"dvc: resume from HEAD {resume_rev[:7]}",
-                        )
-                        self.scm.reset()
-
                     # update experiment params from command line
                     if params:
                         self._update_params(params)
@@ -354,60 +338,6 @@ class BaseStashQueue(ABC):
                     # & tempdir runs
                     self._stash_commit_deps(*args, **kwargs)
 
-                    if resume_rev:
-                        if branch:
-                            branch_name = ExpRefInfo.from_ref(branch).name
-                        else:
-                            branch_name = f"{resume_rev[:7]}"
-                        if self.scm.is_dirty(untracked_files=False):
-                            ui.write(
-                                (
-                                    "Modified checkpoint experiment based on "
-                                    f"'{branch_name}' will be created"
-                                ),
-                            )
-                            branch = None
-                        elif not branch or self.scm.get_ref(branch) != resume_rev:
-                            err_msg = [
-                                "Nothing to do for unchanged checkpoint "
-                                f"'{resume_rev[:7]}'. "
-                            ]
-                            if branch:
-                                err_msg.append(
-                                    "To resume from the head of this "
-                                    "experiment, use "
-                                    f"'dvc exp apply {branch_name}'."
-                                )
-                            else:
-                                names = [
-                                    ref_info.name
-                                    for ref_info in exp_refs_by_rev(
-                                        self.scm, resume_rev
-                                    )
-                                ]
-                                if len(names) > 3:
-                                    names[3:] = [f"... ({len(names) - 3} more)"]
-                                err_msg.append(
-                                    "To resume an experiment containing this "
-                                    "checkpoint, apply one of these heads:\n"
-                                    "\t{}".format(", ".join(names))
-                                )
-                            raise DvcException("".join(err_msg))
-                        else:
-                            ui.write(
-                                "Existing checkpoint experiment "
-                                f"'{branch_name}' will be resumed"
-                            )
-                        if name:
-                            logger.warning(
-                                (
-                                    "Ignoring option '--name %s' for resumed "
-                                    "experiment. Existing experiment name will"
-                                    "be preserved instead."
-                                ),
-                                name,
-                            )
-
                     # save additional repro command line arguments
                     run_env = {
                         DVC_EXP_BASELINE_REV: baseline_rev,
@@ -415,8 +345,6 @@ class BaseStashQueue(ABC):
                     if not name:
                         name = get_random_exp_name(self.scm, baseline_rev)
                     run_env[DVC_EXP_NAME] = name
-                    if resume_rev:
-                        run_env[DVCLIVE_RESUME] = "1"
                     studio_repo_url = get_studio_repo_url()
                     if studio_repo_url is not None:
                         run_env[STUDIO_REPO_URL] = studio_repo_url
@@ -441,12 +369,6 @@ class BaseStashQueue(ABC):
                         baseline_rev[:7],
                     )
                 finally:
-                    if resume_rev:
-                        # NOTE: this set_ref + reset() is equivalent to
-                        # `git reset orig_head` (our SCM reset() only operates
-                        # on HEAD rather than any arbitrary commit)
-                        self.scm.set_ref("HEAD", orig_head, message="dvc: restore HEAD")
-                        self.scm.reset()
                     # Revert any of our changes before prior unstashing
                     self.scm.reset(hard=True)
 
@@ -629,10 +551,8 @@ class BaseStashQueue(ABC):
     ) -> Dict[str, str]:
         results = {}
 
-        def on_diverged(ref: str, checkpoint: bool):
+        def on_diverged(ref: str):
             ref_info = ExpRefInfo.from_ref(ref)
-            if checkpoint:
-                raise CheckpointExistsError(ref_info.name)
             raise ExperimentExistsError(ref_info.name)
 
         refs = get_remote_executor_refs(exp.scm, executor.git_url)

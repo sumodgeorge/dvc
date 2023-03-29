@@ -94,8 +94,6 @@ class WorkspaceQueue(BaseStashQueue):
     def _reproduce_entry(
         self, entry: QueueEntry, executor: "BaseExecutor"
     ) -> Dict[str, Dict[str, str]]:
-        from dvc.stage.monitor import CheckpointKilledError
-
         results: Dict[str, Dict[str, str]] = defaultdict(dict)
         exec_name = self._EXEC_NAME or entry.stash_rev
         infofile = self.get_infofile_path(exec_name)
@@ -114,9 +112,6 @@ class WorkspaceQueue(BaseStashQueue):
                 results[rev].update(
                     self.collect_executor(self.repo.experiments, executor, exec_result)
                 )
-        except CheckpointKilledError:
-            # Checkpoint errors have already been logged
-            return {}
         except DvcException:
             raise
         except Exception as exc:  # noqa: BLE001

@@ -3,16 +3,11 @@ import os
 import signal
 import subprocess
 import threading
-from typing import TYPE_CHECKING, List
 
-from dvc.stage.monitor import CheckpointTask, Monitor
 from dvc.utils import fix_env
 
 from .decorators import unlocked_repo
 from .exceptions import StageCmdFailedError
-
-if TYPE_CHECKING:
-    from dvc.stage import Stage
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +38,9 @@ def _enforce_cmd_list(cmd):
     return cmd if isinstance(cmd, list) else cmd.splitlines()
 
 
-def prepare_kwargs(stage, checkpoint_func=None, run_env=None):
+def prepare_kwargs(stage, run_env=None):
     kwargs = {"cwd": stage.wdir, "env": fix_env(None), "close_fds": True}
 
-    kwargs["env"].update(stage.env(checkpoint_func=checkpoint_func))
     if run_env:
         kwargs["env"].update(run_env)
 
@@ -75,7 +69,7 @@ def get_executable():
     return (os.getenv("SHELL") or "/bin/sh") if os.name != "nt" else None
 
 
-def _run(stage: "Stage", executable, cmd, checkpoint_func, **kwargs):
+def _run(executable, cmd, **kwargs):
     # pylint: disable=protected-access
     main_thread = isinstance(
         threading.current_thread(),
@@ -90,36 +84,19 @@ def _run(stage: "Stage", executable, cmd, checkpoint_func, **kwargs):
         if main_thread:
             old_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-        tasks = _get_monitor_tasks(stage, checkpoint_func, p)
-
-        if tasks:
-            with Monitor(tasks):
-                p.communicate()
-        else:
-            p.communicate()
+        p.communicate()
 
         if p.returncode != 0:
-            for t in tasks:
-                if t.updated.is_set():
-                    raise t.error_cls(cmd, p.returncode)
             raise StageCmdFailedError(cmd, p.returncode)
     finally:
         if old_handler:
             signal.signal(signal.SIGINT, old_handler)
 
 
-def _get_monitor_tasks(stage, checkpoint_func, proc) -> List[CheckpointTask]:
-    result = []
-    if checkpoint_func:
-        result.append(CheckpointTask(stage, checkpoint_func, proc))
-
-    return result
-
-
-def cmd_run(stage, dry=False, checkpoint_func=None, run_env=None):
+def cmd_run(stage, dry=False, run_env=None):
     logger.info("Running stage '%s':", stage.addressing)
     commands = _enforce_cmd_list(stage.cmd)
-    kwargs = prepare_kwargs(stage, checkpoint_func=checkpoint_func, run_env=run_env)
+    kwargs = prepare_kwargs(stage, run_env=run_env)
     executable = get_executable()
 
     if not dry:
@@ -130,13 +107,11 @@ def cmd_run(stage, dry=False, checkpoint_func=None, run_env=None):
         if dry:
             continue
 
-        _run(stage, executable, cmd, checkpoint_func=checkpoint_func, **kwargs)
+        _run(executable, cmd, **kwargs)
 
 
-def run_stage(
-    stage, dry=False, force=False, checkpoint_func=None, run_env=None, **kwargs
-):
-    if not (force or checkpoint_func):
+def run_stage(stage, dry=False, force=False, run_env=None, **kwargs):
+    if not force:
         from .cache import RunCacheNotFoundError
 
         try:
@@ -148,4 +123,4 @@ def run_stage(
                 stage.save_deps()
 
     run = cmd_run if dry else unlocked_repo(cmd_run)
-    run(stage, dry=dry, checkpoint_func=checkpoint_func, run_env=run_env)
+    run(stage, dry=dry, run_env=run_env)

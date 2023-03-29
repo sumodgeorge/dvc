@@ -1,6 +1,5 @@
 import logging
 import os
-import random
 from datetime import datetime
 from unittest.mock import ANY
 
@@ -11,7 +10,7 @@ from scmrepo.exceptions import SCMError
 from dvc.cli import main
 from dvc.repo.experiments.executor.base import BaseExecutor, ExecutorInfo, TaskStatus
 from dvc.repo.experiments.queue.base import QueueEntry
-from dvc.repo.experiments.refs import CELERY_STASH, ExpRefInfo
+from dvc.repo.experiments.refs import CELERY_STASH
 from dvc.repo.experiments.show import _CachedError
 from dvc.repo.experiments.utils import EXEC_PID_DIR, EXEC_TMP_DIR, exp_refs_by_rev
 from dvc.utils import relpath
@@ -215,81 +214,6 @@ def test_show_failed_experiment(tmp_dir, scm, dvc, failed_exp_stage, test_queue)
         else:
             assert rev == exp_rev
             assert exp == expected_failed
-
-
-@pytest.mark.vscode
-@pytest.mark.parametrize("workspace", [True, False])
-def test_show_checkpoint(tmp_dir, scm, dvc, checkpoint_stage, capsys, workspace):
-    baseline_rev = scm.get_rev()
-    results = dvc.experiments.run(
-        checkpoint_stage.addressing, params=["foo=2"], tmp_dir=not workspace
-    )
-    exp_rev = first(results)
-
-    results = dvc.experiments.show()[baseline_rev]
-    # Assert 4 rows: baseline, 2 checkpoints, and final commit
-    assert len(results) == checkpoint_stage.iterations + 2
-
-    checkpoints = []
-    for rev, exp in results.items():
-        if rev != "baseline":
-            checkpoints.append(rev)
-            assert exp["data"]["checkpoint_tip"] == exp_rev
-
-    capsys.readouterr()
-    assert main(["exp", "show", "--no-pager"]) == 0
-    cap = capsys.readouterr()
-
-    for i, rev in enumerate(checkpoints):
-        if i == 0:
-            name = dvc.experiments.get_exact_name([rev])[rev]
-            name = f"{rev[:7]} [{name}]"
-            fs = "╓"
-        elif i == len(checkpoints) - 1:
-            name = rev[:7]
-            fs = "╨"
-        else:
-            name = rev[:7]
-            fs = "╟"
-        assert f"{fs} {name}" in cap.out
-
-
-@pytest.mark.vscode
-@pytest.mark.parametrize("workspace", [True, False])
-def test_show_checkpoint_branch(tmp_dir, scm, dvc, checkpoint_stage, capsys, workspace):
-    results = dvc.experiments.run(
-        checkpoint_stage.addressing, params=["foo=2"], tmp_dir=not workspace
-    )
-    branch_rev = first(results)
-    if not workspace:
-        dvc.experiments.apply(branch_rev)
-
-    results = dvc.experiments.run(
-        checkpoint_stage.addressing,
-        checkpoint_resume=branch_rev,
-        tmp_dir=not workspace,
-    )
-    checkpoint_a = first(results)
-
-    dvc.experiments.apply(branch_rev)
-    results = dvc.experiments.run(
-        checkpoint_stage.addressing,
-        checkpoint_resume=branch_rev,
-        params=["foo=100"],
-        tmp_dir=not workspace,
-    )
-    checkpoint_b = first(results)
-
-    capsys.readouterr()
-    assert main(["exp", "show", "--no-pager"]) == 0
-    cap = capsys.readouterr()
-
-    for rev in (checkpoint_a, checkpoint_b):
-        ref = dvc.experiments.get_branch_by_rev(rev)
-        ref_info = ExpRefInfo.from_ref(ref)
-        name = f"{rev[:7]} [{ref_info.name}]"
-        assert f"╓ {name}" in cap.out
-    assert f"({branch_rev[:7]})" in cap.out
 
 
 def test_show_filter(
@@ -541,54 +465,6 @@ def test_show_running_celery(tmp_dir, scm, dvc, exp_stage, mocker):
     exp_data = get_in(results, [baseline_rev, exp_rev, "data"])
     assert exp_data["status"] == "Running"
     assert exp_data["executor"] == info.location
-
-    assert results["workspace"]["baseline"]["data"]["status"] == "Success"
-
-
-def test_show_running_checkpoint(
-    tmp_dir, scm, dvc, checkpoint_stage, mocker, test_queue
-):
-    from dvc.repo.experiments.executor.local import TempDirExecutor
-
-    baseline_rev = scm.get_rev()
-    dvc.experiments.run(
-        checkpoint_stage.addressing, params=["foo=2"], queue=True, name="foo"
-    )
-    queue = dvc.experiments.celery_queue
-    entries = list(queue.iter_queued())
-
-    run_results = dvc.experiments.run(run_all=True)
-    test_queue.wait(["foo"])
-    checkpoint_rev = first(run_results)
-    exp_ref = first(exp_refs_by_rev(scm, checkpoint_rev))
-
-    mocker.patch.object(
-        dvc.experiments.celery_queue,
-        "iter_active",
-        return_value=entries,
-    )
-    mocker.patch.object(
-        dvc.experiments.celery_queue,
-        "iter_failed",
-        return_value=[],
-    )
-    pidfile = queue.get_infofile_path(entries[0].stash_rev)
-    info = make_executor_info(
-        git_url="foo.git",
-        baseline_rev=baseline_rev,
-        location=TempDirExecutor.DEFAULT_LOCATION,
-        status=TaskStatus.RUNNING,
-    )
-    os.makedirs(os.path.dirname(pidfile), exist_ok=True)
-    (tmp_dir / pidfile).dump_json(info.asdict())
-
-    mocker.patch.object(BaseExecutor, "fetch_exps", return_value=[str(exp_ref)])
-
-    results = dvc.experiments.show()
-
-    checkpoint_res = get_in(results, [baseline_rev, checkpoint_rev, "data"])
-    assert checkpoint_res["status"] == "Running"
-    assert checkpoint_res["executor"] == info.location
 
     assert results["workspace"]["baseline"]["data"]["status"] == "Success"
 
@@ -1013,40 +889,6 @@ def test_show_completed_error(tmp_dir, scm, dvc, exp_stage, mocker):
     experiments = dvc.experiments.show()[baseline_rev]
     assert len(experiments) == 2
     assert exp_rev_2 in experiments
-
-
-@pytest.mark.vscode
-def test_show_checkpoint_error(tmp_dir, scm, dvc, checkpoint_stage, mocker):
-    baseline_rev = scm.get_rev()
-    results = dvc.experiments.run(checkpoint_stage.addressing, params=["foo=2"])
-    exp_rev = first(results)
-    exp_ref = str(first(exp_refs_by_rev(scm, exp_rev)))
-
-    results = dvc.experiments.show()[baseline_rev]
-    # Assert 4 rows: baseline, 2 checkpoints, and final commit
-    assert len(results) == checkpoint_stage.iterations + 2
-
-    checkpoints = {}
-    for rev in results:
-        if rev != "baseline":
-            checkpoints[rev] = scm.resolve_commit(rev)
-    checkpoints[exp_ref] = scm.resolve_commit(exp_ref)
-    checkpoints[baseline_rev] = scm.resolve_commit(baseline_rev)
-
-    failed_rev = random.choice(list(checkpoints.keys()))
-
-    def resolve_commit(rev):
-        if rev == failed_rev:
-            raise SCMError
-        return checkpoints[rev]
-
-    mocker.patch.object(
-        scm,
-        "resolve_commit",
-        side_effect=mocker.MagicMock(side_effect=resolve_commit),
-    )
-    results = dvc.experiments.show(force=True)[baseline_rev]
-    assert len(results) == 1
 
 
 @pytest.mark.vscode

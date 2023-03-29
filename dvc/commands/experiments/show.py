@@ -53,16 +53,13 @@ def _collect_names(all_experiments, **kwargs):
 
 
 experiment_types = {
-    "checkpoint_tip": "│ ╓",
-    "checkpoint_commit": "│ ╟",
-    "checkpoint_base": "├─╨",
     "branch_commit": "├──",
     "branch_base": "└──",
     "baseline": "",
 }
 
 
-def _collect_rows(  # noqa: C901, PLR0912, PLR0913, PLR0915
+def _collect_rows(  # noqa: C901, PLR0913
     base_rev,
     experiments,
     all_headers,
@@ -86,7 +83,6 @@ def _collect_rows(  # noqa: C901, PLR0912, PLR0913, PLR0915
         reverse = sort_order == "desc"
         experiments = _sort_exp(experiments, sort_path, sort_name, sort_type, reverse)
 
-    new_checkpoint = True
     for i, (rev, results) in enumerate(experiments.items()):
         fill_value = FILL_VALUE_ERRORED if results.get("error") else fill_value
         row_dict = {k: fill_value for k in all_headers}
@@ -104,29 +100,13 @@ def _collect_rows(  # noqa: C901, PLR0912, PLR0913, PLR0915
         else:
             name_rev = rev[:7]
 
-        tip = exp.get("checkpoint_tip")
-        parent_rev = exp.get("checkpoint_parent", "")
-        parent_exp = experiments.get(parent_rev, {}).get("data", {})
-        parent_tip = parent_exp.get("checkpoint_tip")
-
         parent = ""
         if is_baseline:
             typ = "baseline"
-        elif tip:
-            if tip == parent_tip:
-                typ = "checkpoint_tip" if new_checkpoint else "checkpoint_commit"
-            elif parent_rev == base_rev:
-                typ = "checkpoint_base"
-            else:
-                typ = "checkpoint_commit"
-                parent = parent_rev[:7]
         elif i < len(experiments) - 1:
             typ = "branch_commit"
         else:
             typ = "branch_base"
-
-        if not is_baseline:
-            new_checkpoint = not (tip and tip == parent_tip)
 
         row_dict["Experiment"] = exp.get("name", "")
         row_dict["rev"] = name_rev
@@ -191,12 +171,8 @@ def _sort_column(sort_by, metric_names, param_names):
 
 def _sort_exp(experiments, sort_path, sort_name, typ, reverse):
     def _sort(item):
-        rev, exp = item
+        _, exp = item
         exp_data = exp.get("data", {})
-        tip = exp_data.get("checkpoint_tip")
-        if tip and tip != rev:
-            # Sort checkpoint experiments by tip commit
-            return _sort((tip, experiments[tip]))
         data = exp_data.get(typ, {}).get(sort_path, {}).get("data", {})
         val = flatten(data).get(sort_name)
         return val is None, val

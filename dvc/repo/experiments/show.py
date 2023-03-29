@@ -153,16 +153,11 @@ def _collect_from_repo(
 
 def _collect_complete_experiment(
     repo: "Repo",
-    baseline: str,
-    exp_rev: str,
     running: Dict[str, Any],
     revs: List[str],
     **kwargs,
 ) -> Dict[str, Dict[str, Any]]:
     results: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
-
-    checkpoint = len(revs) > 1
-    prev = ""
 
     for rev in revs:
         status = ExpStatus.Running if rev in running else ExpStatus.Success
@@ -175,24 +170,10 @@ def _collect_complete_experiment(
         )
         if _is_scm_error(collected_exp):
             return {}
-        if checkpoint:
-            exp = {"checkpoint_tip": exp_rev}
-            if prev:
-                results[prev]["data"][  # type: ignore[unreachable]
-                    "checkpoint_parent"
-                ] = rev
-            if rev in results:
-                results[rev]["data"].update(exp)
-                results.move_to_end(rev)
-            else:
-                exp.update(collected_exp["data"])
-        else:
-            exp = collected_exp["data"]
+        exp = collected_exp["data"]
         if rev not in results:
             results[rev] = {"data": exp}
-        prev = rev
-    if checkpoint and prev:
-        results[prev]["data"]["checkpoint_parent"] = baseline
+
     return results
 
 
@@ -232,15 +213,13 @@ def _collect_branch(
             continue
         commits.append((ref, commit, exp_rev, revs))
 
-    for exp_ref, _, exp_rev, revs in sorted(
+    for exp_ref, _, _, revs in sorted(
         commits, key=lambda x: x[1].commit_time, reverse=True
     ):
         ref_info = ExpRefInfo.from_ref(exp_ref)
         assert ref_info.baseline_sha == baseline
         collected_exp = _collect_complete_experiment(
             repo,
-            baseline=baseline,
-            exp_rev=exp_rev,
             running=running,
             revs=revs,
             **kwargs,
@@ -387,39 +366,6 @@ def update_new(
             to_dict[baseline][rev] = to_dict[baseline].get(rev, experiment)
 
 
-def move_properties_to_head(result: Dict[str, Dict[str, Dict[str, Any]]]):
-    for _, baseline_results in result.items():
-        checkpoint: bool = False
-        head: Dict[str, Any] = {}
-        for rev, rev_data in baseline_results.items():
-            if (
-                "data" not in rev_data
-                or rev_data["data"].get("checkpoint_tip", None) is None
-            ):
-                checkpoint = False
-                head = {}
-                continue
-
-            rev_result: Dict[str, Any] = rev_data["data"]
-            if (
-                checkpoint is True
-                and rev_result["checkpoint_tip"] == head["checkpoint_tip"]
-            ):
-                if "name" in rev_result and "name" not in head:
-                    head["name"] = rev_result["name"]
-                    del rev_result["name"]
-                if rev_result["executor"]:
-                    if not head["executor"]:
-                        head["executor"] = rev_result["executor"]
-                    rev_result["executor"] = None
-                if rev_result["status"] == ExpStatus.Running.name:
-                    head["status"] = ExpStatus.Running.name
-                    rev_result["status"] = ExpStatus.Success.name
-            elif rev_result["checkpoint_tip"] == rev:
-                head = rev_result
-                checkpoint = True
-
-
 def show(  # noqa: PLR0913
     repo: "Repo",
     all_branches=False,
@@ -511,7 +457,5 @@ def show(  # noqa: PLR0913
 
     if not sha_only:
         update_names(repo, branch_names, res)
-
-    move_properties_to_head(res)
 
     return res
