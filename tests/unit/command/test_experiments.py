@@ -892,35 +892,6 @@ def test_experiments_init_displays_output_on_no_run(dvc, mocker, capsys, args):
     assert out.splitlines() == expected_lines
 
 
-def test_show_experiments_pcp(tmp_dir, mocker):
-    all_experiments = {
-        "workspace": {
-            "baseline": {
-                "data": {
-                    "timestamp": None,
-                    "params": {"params.yaml": {"data": {"foo": 1}}},
-                    "status": "Success",
-                    "executor": None,
-                    "metrics": {"scores.json": {"data": {"bar": 0.9544670443829399}}},
-                }
-            }
-        },
-    }
-    experiments_table = mocker.patch("dvc.commands.experiments.show.experiments_table")
-    td = experiments_table.return_value
-
-    show_experiments(all_experiments, pcp=True)
-
-    td.drop.assert_called_with("Created")
-    td.dropna.assert_called_with("rows", how="all", subset=set())
-    td.drop_duplicates.assert_called_with("rows", subset=set())
-
-    kwargs = td.to_parallel_coordinates.call_args[1]
-
-    assert kwargs["output_path"] == str(tmp_dir / "dvc_plots" / "index.html")
-    assert kwargs["color_by"] == "Experiment"
-
-
 def test_experiments_save(dvc, scm, mocker):
     cli_args = parse_args(["exp", "save", "--name", "exp-name", "--force"])
     assert cli_args.func == CmdExperimentsSave
