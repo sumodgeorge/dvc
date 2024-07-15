@@ -1,3 +1,4 @@
 # NOTE: using strict version due to
 # https://github.com/iterative/dvc/issues/7949
 PyInstaller==5.9.0
+setuptools>=70.0.0 # not directly required, pinned by Snyk to avoid a vulnerability
